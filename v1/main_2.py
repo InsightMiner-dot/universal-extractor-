@@ -1,6 +1,7 @@
 import os
 import asyncio
 import datetime
+import json
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
@@ -44,51 +45,58 @@ async def scrape_webpage(url: str):
             await browser.close()
 
 async def extract_data(page_title: str, raw_text: str, user_prompt: str):
-    """Passes scraped text to Azure OpenAI for structured Pydantic extraction."""
-    print("🧠 [AI Core] Processing text and extracting structured data...")
+    """Passes scraped text to Azure OpenAI using native JSON mode."""
+    print("🧠 [AI Core] Processing text via Native JSON Mode...")
     
-    # Initialize the LLM connection
+    # Force JSON mode by passing model_kwargs
     llm = AzureChatOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         azure_deployment=os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4o-mini"), 
         api_version="2024-08-01-preview",
-        temperature=0.0
+        temperature=0.0,
+        model_kwargs={"response_format": {"type": "json_object"}}  # ◄── FORCES NATIVE JSON OBJECT OUTPUT
     )
-    
-    # Bind the schema format directly to the LLM
-    structured_llm = llm.with_structured_output(UniversalExtractionResponse)
     
     current_date_str = datetime.date.today().strftime("%B %d, %Y")
     
+    # We explicitly inject the exact JSON schema requirements into the prompt
     system_instructions = (
-        f"You are an elite data extraction agent.\n"
+        f"You are an elite data extraction agent. You must respond ONLY with a valid JSON object matching the requested schema.\n"
         f"Today's current real-world date is: {current_date_str}.\n"
         f"Source Site Scraped: '{page_title}'\n\n"
         f"--- SCRAPED BODY TEXT DATA CONTENT ---\n"
         f"{raw_text[:15000]}\n"
         f"--- END OF DATA CONTENT ---\n\n"
         f"User Instruction Directive: {user_prompt}\n\n"
-        f"Task Guidelines:\n"
-        f"1. Isolate entries/records matching the prompt rules.\n"
-        f"2. If the user asks for relative dates, use today's date ({current_date_str}) to evaluate dates found in the text.\n"
-        f"3. For each target item found, extract all attributes requested by the user into the data row dictionary structure."
+        f"CRITICAL: Your output must be a single JSON object structured exactly like this instance:\n"
+        "{\n"
+        '  "page_title": "string",\n'
+        '  "summary": "string describing the findings",\n'
+        '  "extracted_records": [\n'
+        '    { "attributes": { "field1": "value1", "field2": "value2" } }\n'
+        '  ],\n'
+        '  "data_quality_score": 1.0\n'
+        "}"
     )
 
-    return await structured_llm.ainvoke(system_instructions)
+    # Invoke the model directly
+    ai_message = await llm.ainvoke(system_instructions)
+    raw_json_string = ai_message.content
+    
+    # Parse the raw JSON string back into your strict Pydantic model
+    return UniversalExtractionResponse.model_validate_json(raw_json_string)
 
 # =====================================================================
 # EXECUTION ENTRY POINT
 # =====================================================================
 async def main():
-    # Quick credential check
     if not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_ENDPOINT"):
         print("❌ Error: Missing Azure OpenAI credentials. Please check your .env file.")
         return
 
-    # Interactive terminal prompts
     print("\n" + "=" * 60)
-    print("🚀 CLI Universal Web Extractor")
+    print("🚀 CLI Universal Web Extractor (JSON-Mode)")
     print("=" * 60)
     target_url = input("👉 Enter target URL: ").strip()
     user_prompt = input("👉 Enter extraction instructions: ").strip()
@@ -112,7 +120,6 @@ async def main():
         for index, record in enumerate(result.extracted_records, start=1):
             print(f"\n  [Record {index}]")
             for key, value in record.attributes.items():
-                # Capitalize the key visually for cleaner reading
                 print(f"    • {str(key).replace('_', ' ').title()}: {value}")
                 
         print("\n" + "=" * 60 + "\n")
@@ -122,7 +129,6 @@ async def main():
         print(f"\n❌ Process failed:\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
-    # Prevent Windows Event Loop crash issues
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     

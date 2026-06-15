@@ -7,41 +7,35 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# =====================================================================
-# 1. SECURE ENVIRONMENT LOAD
-# This reads the local .env file before the rest of the script executes
-# =====================================================================
+# Load environment variables safely from .env file
 load_dotenv()
 
 from langchain_openai import AzureChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
+from langchain_core.utils.function_calling import convert_to_openai_tool # ◄── CRITICAL IMPORT FOR THE FIX
 
 app = FastAPI(title="Universal Web Extractor AI")
 
-# =====================================================================
-# 2. CORS SECURITY CONFIGURATION
-# Protects your API from unauthorized cross-origin browser requests
-# =====================================================================
+# CORS Security Allowed Domains Whitelist
 origins = [
-    "http://localhost:8500",      # Local dev connection
-    "http://127.0.0.1:8500",     # Local loopback connection
-    # "https://yourdomain.com",  # Add your production domain here when ready
+    "http://localhost:8500",
+    "http://127.0.0.1:8500",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,            # Only allow domains in our whitelist
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],    # Strict HTTP method restriction
-    allow_headers=["*"],              # Allows standard browser headers
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
-# Template Directory Resolution
+# Template Setup
 current_dir = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(current_dir, "templates"))
 
-# Global LLM Instantiation via securely loaded variables
+# Global LLM Instantiation
 llm = AzureChatOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
@@ -62,12 +56,11 @@ async def home_page(request: Request):
 
 @app.post("/extract", response_class=HTMLResponse)
 async def handle_extraction(request: Request, url: str = Form(...), user_prompt: str = Form(...)):
-    # Fallback runtime safety check to make sure keys aren't missing or invalid
     if not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_ENDPOINT"):
         return templates.TemplateResponse("index.html", {
             "request": request, 
             "result": None, 
-            "error": "Backend Error: System could not read keys. Ensure your .env file exists and contains valid fields."
+            "error": "Backend Error: Missing real Azure OpenAI credentials in your .env file."
         })
 
     try:
@@ -79,11 +72,13 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
             }
         })
 
-        # Fetch and securely flatten structural tools to resolve unhashable errors
+        # 1. Fetch the raw tools (which are dictionaries)
         raw_mcp_tools = await mcp_client.get_tools()
-        sanitized_tools = [t for t in raw_mcp_tools]
+        
+        # 2. FIX: Convert raw dictionaries into typed, hashable LangChain tools
+        sanitized_tools = [convert_to_openai_tool(t) for t in raw_mcp_tools]
 
-        # Compile agent factory using the normalized tool layout
+        # 3. Create agent factory using the strictly validated, hashable tools list
         agent = create_agent(
             model=llm, 
             tools=sanitized_tools, 
@@ -92,6 +87,7 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
 
         full_query = f"Go to {url} immediately. Once page finishes loading, follow this prompt request: {user_prompt}"
 
+        # 4. Invoke agent lifecycle
         agent_response = await agent.ainvoke({
             "messages": [{"role": "user", "content": full_query}]
         })

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Agent Extractor UI</title>
+    <style>
+        :root {
+            --bg: #f4f6f9;
+            --panel: #ffffff;
+            --text: #2d3748;
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --border: #e2e8f0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #1a202c;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-sizing: border-box;
+            font-size: 15px;
+            transition: border-color 0.2s;
+        }
+        input[type="text"]:focus, textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        textarea {
+            resize: vertical;
+            height: 100px;
+        }
+        button {
+            width: 100%;
+            background-color: var(--primary);
+            color: white;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+        .error-banner {
+            background-color: #fee2e2;
+            border: 1px solid #fca5a5;
+            color: #991b1b;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+        }
+        .spinner-container {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .spinner {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 4px solid rgba(0,0,0,0.1);
+            border-radius: 50%;
+            border-top-color: var(--primary);
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .result-title {
+            font-size: 20px;
+            margin-top: 0;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 10px;
+        }
+        .metric {
+            display: inline-block;
+            background: #e0e7ff;
+            color: #3730a3;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        ul {
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌐 Universal Browser Agent Extractor</h1>
+        
+        <div class="card">
+            <form action="/extract" method="post" onsubmit="showLoading()">
+                <div class="form-group">
+                    <label for="url">Target URL</label>
+                    <input type="text" id="url" name="url" placeholder="https://news.ycombinator.com" value="{{ submitted_url or '' }}" required>
+                </div>
+                <div class="form-group">
+                    <label for="user_prompt">Your Extraction Prompt / Instructions</label>
+                    <textarea id="user_prompt" name="user_prompt" placeholder="Identify the top 3 items and outline them here..." required>{{ submitted_prompt or '' }}</textarea>
+                </div>
+                <button type="submit">Deploy Browser Agent & Extract</button>
+            </form>
+
+            <div class="spinner-container" id="loading">
+                <div class="spinner"></div>
+                <p style="margin-top: 10px; font-weight: 500; color: #6b7280;">Spawning sandboxed browser instance and extracting data...</p>
+            </div>
+        </div>
+
+        {% if error %}
+        <div class="error-banner">
+            <strong>Execution Failed:</strong> {{ error }}
+        </div>
+        {% endif %}
+
+        {% if result %}
+        <div class="card" id="results">
+            <h2 class="result-title">📄 {{ result.page_title }}</h2>
+            <span class="metric">Data Quality Score: {{ result.data_quality_score }}</span>
+            
+            <h3>📝 Extraction Summary</h3>
+            <p style="line-height: 1.6;">{{ result.scraped_summary }}</p>
+
+            <h3>💡 Key Structured Insights</h3>
+            <ul>
+                {% for insight in result.key_insights %}
+                <li>{{ insight }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+            const results = document.getElementById('results');
+            if (results) results.style.display = 'none';
+        }
+    </script>
+</body>
+</html>

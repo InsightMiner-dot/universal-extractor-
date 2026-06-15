@@ -7,13 +7,12 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# Load environment variables safely from .env file
+# Load variables securely from your local .env file
 load_dotenv()
 
 from langchain_openai import AzureChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
-from langchain_core.utils.function_calling import convert_to_openai_tool # ◄── CRITICAL IMPORT FOR THE FIX
 
 app = FastAPI(title="Universal Web Extractor AI")
 
@@ -44,6 +43,7 @@ llm = AzureChatOpenAI(
     temperature=0.0
 )
 
+# Enforced Pydantic response format constraint schema
 class ExtractionOutput(BaseModel):
     page_title: str = Field(description="The primary name or title of the scanned webpage.")
     scraped_summary: str = Field(description="Detailed overview answering the user prompt precisely.")
@@ -64,6 +64,7 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
         })
 
     try:
+        # Initializing the MCP connection context manager
         mcp_client = MultiServerMCPClient({
             "browser": {
                 "transport": "stdio",
@@ -72,35 +73,45 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
             }
         })
 
-        # 1. Fetch the raw tools (which are dictionaries)
-        raw_mcp_tools = await mcp_client.get_tools()
-        
-        # 2. FIX: Convert raw dictionaries into typed, hashable LangChain tools
-        sanitized_tools = [convert_to_openai_tool(t) for t in raw_mcp_tools]
+        # Open the browser session cleanly to prevent subprocess hang/leak crashes
+        async with mcp_client.session("browser") as session:
+            # Load tools natively from the active server context stream
+            browser_tools = await session.get_tools()
 
-        # 3. Create agent factory using the strictly validated, hashable tools list
-        agent = create_agent(
-            model=llm, 
-            tools=sanitized_tools, 
-            response_format=ExtractionOutput
-        )
+            # Compile the agent factory using the native tools and schema definition
+            agent = create_agent(
+                model=llm, 
+                tools=browser_tools, 
+                response_format=ExtractionOutput
+            )
 
-        full_query = f"Go to {url} immediately. Once page finishes loading, follow this prompt request: {user_prompt}"
+            full_query = (
+                f"1. Navigate directly to the URL: {url}\n"
+                f"2. Once loaded, fulfill this extraction instruction: {user_prompt}\n"
+                "3. Provide the final response strictly matching the structured layout."
+            )
 
-        # 4. Invoke agent lifecycle
-        agent_response = await agent.ainvoke({
-            "messages": [{"role": "user", "content": full_query}]
-        })
+            # Invoke the execution graph
+            agent_response = await agent.ainvoke({
+                "messages": [{"role": "user", "content": full_query}]
+            })
 
-        structured_data: ExtractionOutput = agent_response.get("structured_response")
+            # Safely capture the validated object output
+            structured_data: ExtractionOutput = agent_response.get("structured_response")
 
-        return templates.TemplateResponse("index.html", {
-            "request": request,
-            "result": structured_data,
-            "error": None,
-            "submitted_url": url,
-            "submitted_prompt": user_prompt
-        })
+            return templates.TemplateResponse("index.html", {
+                "request": request,
+                "result": structured_data,
+                "error": None,
+                "submitted_url": url,
+                "submitted_prompt": user_prompt
+            })
 
     except Exception as e:
-        return templates.TemplateResponse("index.html", {"request": request, "result": None, "error": str(e)})
+        import traceback
+        print(f"❌ Detailed Route Error:\n{traceback.format_exc()}")
+        return templates.TemplateResponse("index.html", {
+            "request": request, 
+            "result": None, 
+            "error": f"Extraction Error: {str(e)}"
+        })

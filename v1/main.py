@@ -1,5 +1,6 @@
 # main.py
 import os
+import json
 from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
@@ -7,26 +8,21 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-# Load variables securely from your local .env file
+# Load your local .env file securely
 load_dotenv()
 
 from langchain_openai import AzureChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import SystemMessage
 
-app = FastAPI(title="Universal Web Extractor AI")
-
-# CORS Security Allowed Domains Whitelist
-origins = [
-    "http://localhost:8500",
-    "http://127.0.0.1:8500",
-]
+app = FastAPI(title="Local Browser Extractor AI")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"], # Relaxed for local testing
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -60,11 +56,11 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
         return templates.TemplateResponse("index.html", {
             "request": request, 
             "result": None, 
-            "error": "Backend Error: Missing real Azure OpenAI credentials in your .env file."
+            "error": "Backend Error: Missing Azure OpenAI credentials. Please check your .env file."
         })
 
     try:
-        # Initializing the MCP connection context manager
+        # 1. Initialize the MCP Client with standard Playwright arguments
         mcp_client = MultiServerMCPClient({
             "browser": {
                 "transport": "stdio",
@@ -73,43 +69,55 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
             }
         })
 
-        # Open the browser session cleanly to prevent subprocess hang/leak crashes
-        async with mcp_client.session("browser") as session:
-            # Load tools natively from the active server context stream
-            browser_tools = await session.get_tools()
+        # 2. Fetch the tools directly from the global client object
+        # This completely avoids the dictionary unhashable errors
+        browser_tools = await mcp_client.get_tools()
 
-            # Compile the agent factory using the native tools and schema definition
-            agent = create_agent(
-                model=llm, 
-                tools=browser_tools, 
-                response_format=ExtractionOutput
-            )
+        # 3. Create a stable ReAct agent using LangGraph
+        agent = create_react_agent(llm, tools=browser_tools)
 
-            full_query = (
-                f"1. Navigate directly to the URL: {url}\n"
-                f"2. Once loaded, fulfill this extraction instruction: {user_prompt}\n"
-                "3. Provide the final response strictly matching the structured layout."
-            )
+        # 4. Give the agent strict instructions to output raw JSON matching your schema
+        system_instruction = (
+            f"You are a web extraction assistant. Navigate to {url}. "
+            f"Fulfill this task: {user_prompt}\n\n"
+            "Once you have the data, you MUST return your final response as a raw JSON object "
+            "matching this exact structure, with no markdown formatting or extra text:\n"
+            "{\n"
+            '  "page_title": "string",\n'
+            '  "scraped_summary": "string",\n'
+            '  "key_insights": ["string1", "string2"],\n'
+            '  "data_quality_score": 0.95\n'
+            "}"
+        )
 
-            # Invoke the execution graph
-            agent_response = await agent.ainvoke({
-                "messages": [{"role": "user", "content": full_query}]
-            })
+        # 5. Invoke the graph pipeline
+        agent_response = await agent.ainvoke({
+            "messages": [{"role": "user", "content": system_instruction}]
+        })
 
-            # Safely capture the validated object output
-            structured_data: ExtractionOutput = agent_response.get("structured_response")
+        # 6. Extract the final JSON string from the AI's last message
+        raw_text_output = agent_response["messages"][-1].content
+        
+        # Strip markdown code blocks just in case the AI added them
+        cleaned_json_string = raw_text_output.replace("```json", "").replace("```", "").strip()
+        
+        # Parse into your structured Pydantic object
+        structured_data = ExtractionOutput.model_validate_json(cleaned_json_string)
 
-            return templates.TemplateResponse("index.html", {
-                "request": request,
-                "result": structured_data,
-                "error": None,
-                "submitted_url": url,
-                "submitted_prompt": user_prompt
-            })
+        # 7. Close connections to prevent ghost node.js processes from locking your computer's memory
+        await mcp_client.close()
+
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "result": structured_data,
+            "error": None,
+            "submitted_url": url,
+            "submitted_prompt": user_prompt
+        })
 
     except Exception as e:
         import traceback
-        print(f"❌ Detailed Route Error:\n{traceback.format_exc()}")
+        print(f"❌ Detailed Console Error:\n{traceback.format_exc()}")
         return templates.TemplateResponse("index.html", {
             "request": request, 
             "result": None, 

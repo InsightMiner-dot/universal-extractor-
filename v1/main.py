@@ -1,6 +1,5 @@
 # main.py
 import os
-import json
 from fastapi import FastAPI, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
@@ -14,13 +13,12 @@ load_dotenv()
 from langchain_openai import AzureChatOpenAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import create_react_agent
-from langchain_core.messages import SystemMessage
 
 app = FastAPI(title="Local Browser Extractor AI")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Relaxed for local testing
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,19 +46,19 @@ class ExtractionOutput(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def home_page(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "result": None, "error": None})
+    # FIXED: request is now passed as the first positional argument
+    return templates.TemplateResponse(request, "index.html", {"result": None, "error": None})
 
 @app.post("/extract", response_class=HTMLResponse)
 async def handle_extraction(request: Request, url: str = Form(...), user_prompt: str = Form(...)):
     if not os.getenv("AZURE_OPENAI_API_KEY") or not os.getenv("AZURE_OPENAI_ENDPOINT"):
-        return templates.TemplateResponse("index.html", {
-            "request": request, 
+        # FIXED: request is passed first
+        return templates.TemplateResponse(request, "index.html", {
             "result": None, 
             "error": "Backend Error: Missing Azure OpenAI credentials. Please check your .env file."
         })
 
     try:
-        # 1. Initialize the MCP Client with standard Playwright arguments
         mcp_client = MultiServerMCPClient({
             "browser": {
                 "transport": "stdio",
@@ -69,14 +67,13 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
             }
         })
 
-        # 2. Fetch the tools directly from the global client object
-        # This completely avoids the dictionary unhashable errors
+        # Fetch the tools directly from the global client object
         browser_tools = await mcp_client.get_tools()
 
-        # 3. Create a stable ReAct agent using LangGraph
+        # Create a stable ReAct agent using LangGraph
         agent = create_react_agent(llm, tools=browser_tools)
 
-        # 4. Give the agent strict instructions to output raw JSON matching your schema
+        # Give the agent strict instructions to output raw JSON matching your schema
         system_instruction = (
             f"You are a web extraction assistant. Navigate to {url}. "
             f"Fulfill this task: {user_prompt}\n\n"
@@ -90,25 +87,24 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
             "}"
         )
 
-        # 5. Invoke the graph pipeline
         agent_response = await agent.ainvoke({
             "messages": [{"role": "user", "content": system_instruction}]
         })
 
-        # 6. Extract the final JSON string from the AI's last message
+        # Extract the final JSON string from the AI's last message
         raw_text_output = agent_response["messages"][-1].content
         
-        # Strip markdown code blocks just in case the AI added them
+        # Strip markdown code blocks to ensure safe parsing
         cleaned_json_string = raw_text_output.replace("```json", "").replace("```", "").strip()
         
         # Parse into your structured Pydantic object
         structured_data = ExtractionOutput.model_validate_json(cleaned_json_string)
 
-        # 7. Close connections to prevent ghost node.js processes from locking your computer's memory
+        # Close connections cleanly
         await mcp_client.close()
 
-        return templates.TemplateResponse("index.html", {
-            "request": request,
+        # FIXED: request is passed first
+        return templates.TemplateResponse(request, "index.html", {
             "result": structured_data,
             "error": None,
             "submitted_url": url,
@@ -118,8 +114,9 @@ async def handle_extraction(request: Request, url: str = Form(...), user_prompt:
     except Exception as e:
         import traceback
         print(f"❌ Detailed Console Error:\n{traceback.format_exc()}")
-        return templates.TemplateResponse("index.html", {
-            "request": request, 
+        
+        # FIXED: request is passed first
+        return templates.TemplateResponse(request, "index.html", {
             "result": None, 
             "error": f"Extraction Error: {str(e)}"
         })
